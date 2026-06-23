@@ -1,0 +1,85 @@
+{
+  "Comment": "DocuMind document processing pipeline — extract, analyze, store, notify",
+  "StartAt": "ExtractText",
+  "States": {
+    "ExtractText": {
+      "Type": "Task",
+      "Resource": "${extract_text_lambda_arn}",
+      "Comment": "Calls Textract to extract raw text and key-value pairs from the uploaded document",
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "AnalyzeDocument"
+    },
+    "AnalyzeDocument": {
+      "Type": "Task",
+      "Resource": "${analyze_document_lambda_arn}",
+      "Comment": "Passes extracted text to Claude AI for classification and structured field extraction",
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "StoreResults"
+    },
+    "StoreResults": {
+      "Type": "Task",
+      "Resource": "${store_results_lambda_arn}",
+      "Comment": "Persists analysis results to DynamoDB and marks document COMPLETED",
+      "ResultPath": "$",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleFailure",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "SendNotification"
+    },
+    "SendNotification": {
+      "Type": "Task",
+      "Resource": "${send_notification_lambda_arn}",
+      "Comment": "Publishes completion event to SNS — email, webhook, or Slack consumers subscribe",
+      "ResultPath": "$.notification",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 1.5
+        }
+      ],
+      "End": true
+    },
+    "HandleFailure": {
+      "Type": "Task",
+      "Resource": "${failure_handler_lambda_arn}",
+      "Comment": "Marks document FAILED in DynamoDB and publishes failure alert to SNS",
+      "End": true
+    }
+  }
+}

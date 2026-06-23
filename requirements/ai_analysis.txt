@@ -1,0 +1,2 @@
+-r base.txt
+anthropic>=0.40.0

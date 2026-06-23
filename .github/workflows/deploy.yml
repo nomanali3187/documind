@@ -1,0 +1,83 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "dev"
+        type: choice
+        options: [dev, prod]
+
+env:
+  AWS_REGION: us-east-1
+  TF_VERSION: "1.7.5"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  deploy:
+    name: Deploy to ${{ github.event.inputs.environment || 'dev' }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    concurrency:
+      group: deploy-${{ github.event.inputs.environment || 'dev' }}
+      cancel-in-progress: false
+
+    permissions:
+      id-token: write   # OIDC auth to AWS
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+          cache-dependency-path: requirements/dev.txt
+
+      - name: Run unit tests
+        env:
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        run: |
+          pip install -r requirements/dev.txt
+          PYTHONPATH=src pytest tests/unit -v --cov-fail-under=80
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build Lambda packages
+        run: make build
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Set environment variable
+        run: echo "DEPLOY_ENV=${{ github.event.inputs.environment || 'dev' }}" >> $GITHUB_ENV
+
+      - name: Terraform Init
+        working-directory: terraform/environments/${{ env.DEPLOY_ENV }}
+        run: terraform init -backend-config=backend.hcl
+
+      - name: Terraform Plan
+        working-directory: terraform/environments/${{ env.DEPLOY_ENV }}
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: terraform/environments/${{ env.DEPLOY_ENV }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Output deployment info
+        working-directory: terraform/environments/${{ env.DEPLOY_ENV }}
+        run: terraform output
